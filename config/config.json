@@ -8,21 +8,22 @@
   "network": {
     "encoder": {
       "in_channels": 2,
-      "num_layers" : 2,
+      "num_layers": 2,
       "kernel_size": 3,
       "channel_size": 64
     },
     "recursive": {
       "alpha_residual": true,
       "in_channels": 64,
-      "num_layers" : 2,
+      "num_layers": 2,
       "kernel_size": 3
     },
     "decoder": {
       "deconv": {
         "in_channels": 64,
-        "kernel_size": 3,
-        "stride": 3,
+        "kernel_size": 4,
+        "stride": 2,
+        "padding": 1,
         "out_channels": 64
       },
       "final": {
@@ -32,28 +33,27 @@
       }
     }
   },
-    
+
   "training": {
-     "num_epochs": 400,
-     "batch_size": 32,
+    "num_epochs": 300,
+    "batch_size": 8,
 
-     "min_L": 32,
-     "n_views": 32,
-     "n_workers": 4,
-     "crop": 3,
+    "min_L": 7,
+    "n_views": 7,
+    "n_workers": 4,
+    "crop": 1,
 
+    "lr": 0.0007,
+    "lr_step": 3,
+    "lr_decay": 0.95,
 
-     "lr": 0.0007,
-     "lr_step": 2,
-     "lr_decay": 0.97,
+    "load_lr_maps": false,
+    "beta": 0.0,
 
-     "load_lr_maps": false,
-     "beta": 50.0,
-
-    "create_patches": true,
-    "patch_size": 64,
-    "val_proportion": 0.10,
-    "lambda": 0.000001
+    "create_patches": false,
+    "patch_size": 128,
+    "val_proportion": 0.2,
+    "lambda": 0.000001,
+    "lambda_range": 0.02
   }
-
 }

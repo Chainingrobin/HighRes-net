@@ -144,10 +144,12 @@ class Decoder(nn.Module):
         
         super(Decoder, self).__init__()
 
+        # Deconv with proper padding for 2x upsampling: (128-1)*2 - 2*1 + 4 + 0 = 256
         self.deconv = nn.Sequential(nn.ConvTranspose2d(in_channels=config["deconv"]["in_channels"],
                                                        out_channels=config["deconv"]["out_channels"],
                                                        kernel_size=config["deconv"]["kernel_size"],
-                                                       stride=config["deconv"]["stride"]),
+                                                       stride=config["deconv"]["stride"],
+                                                       padding=config["deconv"].get("padding", 0)),
                                     nn.PReLU())
 
         self.final = nn.Conv2d(in_channels=config["final"]["in_channels"],
