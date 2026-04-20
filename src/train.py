@@ -184,7 +184,9 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, conf
             # srs_shifted = torch.clamp(srs_shifted, min=0.0, max=1.0)  # correct over/under-shoots
             loss = -get_loss(srs_shifted, hrs, cropped_mask, metric='cPSNR')
             loss = torch.mean(loss)
-            loss += config["training"]["lambda"] * torch.mean(shifts)**2
+            # Backward-compatible: prefer explicit shift regularization key.
+            lambda_shift_reg = config["training"].get("lambda_shift_reg", config["training"].get("lambda", 0.0))
+            loss += lambda_shift_reg * torch.mean(shifts)**2
 
             # Backprop
             loss.backward()
@@ -296,11 +298,35 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", help="path of the config file", default='config/config.json')
+    parser.add_argument("--lambda_reg", type=float, default=None,
+                        help="Override training lambda regularization term.")
+    parser.add_argument("--num_epochs", type=int, default=None,
+                        help="Override number of epochs.")
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="Override batch size.")
+    parser.add_argument("--lr", type=float, default=None,
+                        help="Override learning rate.")
 
     args = parser.parse_args()
     assert os.path.isfile(args.config)
 
     with open(args.config, "r") as read_file:
         config = json.load(read_file)
+
+    # Optional CLI overrides for fast experiment sweeps without editing config files.
+    if args.lambda_reg is not None:
+        config["training"]["lambda"] = args.lambda_reg
+    if args.num_epochs is not None:
+        config["training"]["num_epochs"] = args.num_epochs
+    if args.batch_size is not None:
+        config["training"]["batch_size"] = args.batch_size
+    if args.lr is not None:
+        config["training"]["lr"] = args.lr
+
+    print("\nEffective training hyperparameters:")
+    print(f"  lambda: {config['training']['lambda']}")
+    print(f"  num_epochs: {config['training']['num_epochs']}")
+    print(f"  batch_size: {config['training']['batch_size']}")
+    print(f"  lr: {config['training']['lr']}")
 
     main(config)

@@ -35,7 +35,7 @@
   },
 
   "training": {
-    "num_epochs": 300,
+    "num_epochs": 30,
     "batch_size": 8,
 
     "min_L": 7,
@@ -43,7 +43,7 @@
     "n_workers": 4,
     "crop": 1,
 
-    "lr": 0.0007,
+    "lr": 0.0003,
     "lr_step": 3,
     "lr_decay": 0.95,
 
@@ -54,6 +54,15 @@
     "patch_size": 128,
     "val_proportion": 0.2,
     "lambda": 0.000001,
-    "lambda_range": 0.02
+    "lambda_shift_reg": 0.000001,
+    "lambda_range": 0.003,
+    "lambda_tv": 0.00005,
+    "lambda_edge_tv": 0.0002,
+    "edge_aware_k": 10.0,
+    "lambda_freq": 0.01,
+    "freq_low_ratio": 0.12,
+    "freq_high_ratio": 0.28,
+    "freq_use_log_magnitude": true,
+    "smoothness_mode": "freq_band"
   }
 }

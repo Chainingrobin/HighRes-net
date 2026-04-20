@@ -6,3 +6,7 @@ src.egg-info/
 .idea
 venv
 
+
+models/weights/checkpoints/benchmark_last_run.csv
+/models/weights
+/archive

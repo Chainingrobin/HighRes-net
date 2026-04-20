@@ -279,7 +279,13 @@ def compute_ssim(img_true, img_pred, data_range=1.0):
         return None
 
 
-def compute_metrics(hr_true, sr_pred):
+def _gradient_magnitude(img):
+    """Compute simple gradient magnitude using finite differences."""
+    gy, gx = np.gradient(img)
+    return np.sqrt(gx ** 2 + gy ** 2)
+
+
+def compute_metrics(hr_true, sr_pred, hr_map=None):
     """
     Compute comprehensive image quality metrics
     
@@ -290,12 +296,18 @@ def compute_metrics(hr_true, sr_pred):
     Returns:
         dict with comprehensive metrics:
             'valid': bool - Whether metrics could be computed
-            'psnr': float - Peak Signal-to-Noise Ratio (higher is better)
-            'psnr_label': str - Quality assessment label
-            'ssim': float - Structural Similarity (0-1, higher is better)
-            'ssim_label': str - Quality assessment label
+            'psnr': float - Raw PSNR without brightness correction (higher is better)
+            'ssim': float - Raw SSIM without brightness correction (higher is better)
+            'psnr_bias_corrected': float - PSNR after global brightness alignment
+            'ssim_bias_corrected': float - SSIM after global brightness alignment
+            'brightness_bias': float - Mean HR-SR offset (positive => SR is too dark)
             'mse': float - Mean Squared Error (lower is better)
             'mae': float - Mean Absolute Error (lower is better)
+            'rmse': float - Root Mean Squared Error (lower is better)
+            'edge_mae': float - Edge-domain MAE using gradient magnitude (lower is better)
+            'edge_ratio': float - mean(|grad(SR)|) / mean(|grad(HR)|), near 1 is ideal
+            'contrast_ratio': float - std(SR) / std(HR), near 1 is ideal
+            'p01_p99_range_ratio': float - Dynamic-range ratio using robust percentiles
     
     Interpretation Guide:
     ─────────────────────────────────────────────────────────────
@@ -317,17 +329,78 @@ def compute_metrics(hr_true, sr_pred):
             'reason': 'No HR reference image available'
         }
     
+    hr_true = np.asarray(hr_true, dtype=np.float32)
+    sr_pred = np.asarray(sr_pred, dtype=np.float32)
+
+    if hr_true.shape != sr_pred.shape:
+        return {
+            'valid': False,
+            'reason': f'Shape mismatch: HR {hr_true.shape} vs SR {sr_pred.shape}'
+        }
+
+    hr_true = np.clip(hr_true, 0, 1)
+    sr_pred = np.clip(sr_pred, 0, 1)
+
+    # Raw metrics (unaltered SR output)
     psnr = compute_psnr(hr_true, sr_pred)
     ssim = compute_ssim(hr_true, sr_pred)
-    
+
+    # Optional clear-pixel masking for bias estimate
+    if hr_map is not None:
+        hr_map = np.asarray(hr_map)
+        if hr_map.shape == hr_true.shape:
+            valid_mask = hr_map > 0
+        else:
+            valid_mask = np.ones_like(hr_true, dtype=bool)
+    else:
+        valid_mask = np.ones_like(hr_true, dtype=bool)
+
+    if np.any(valid_mask):
+        brightness_bias = float(np.mean((hr_true - sr_pred)[valid_mask]))
+    else:
+        brightness_bias = 0.0
+
+    # Bias-corrected view of SR for diagnostic comparison
+    sr_bias_corrected = np.clip(sr_pred + brightness_bias, 0, 1)
+    psnr_bc = compute_psnr(hr_true, sr_bias_corrected)
+    ssim_bc = compute_ssim(hr_true, sr_bias_corrected)
+
+    # Error and perceptual proxies
+    mse = float(np.mean((hr_true - sr_pred) ** 2))
+    mae = float(np.mean(np.abs(hr_true - sr_pred)))
+    rmse = float(np.sqrt(mse))
+
+    hr_grad = _gradient_magnitude(hr_true)
+    sr_grad = _gradient_magnitude(sr_pred)
+    edge_mae = float(np.mean(np.abs(hr_grad - sr_grad)))
+    hr_grad_mean = float(np.mean(np.abs(hr_grad)))
+    sr_grad_mean = float(np.mean(np.abs(sr_grad)))
+    edge_ratio = sr_grad_mean / hr_grad_mean if hr_grad_mean > 1e-12 else np.nan
+
+    hr_std = float(np.std(hr_true))
+    sr_std = float(np.std(sr_pred))
+    contrast_ratio = sr_std / hr_std if hr_std > 1e-12 else np.nan
+
+    hr_range = float(np.percentile(hr_true, 99) - np.percentile(hr_true, 1))
+    sr_range = float(np.percentile(sr_pred, 99) - np.percentile(sr_pred, 1))
+    p01_p99_range_ratio = sr_range / hr_range if hr_range > 1e-12 else np.nan
+
     return {
         'valid': True,
         'psnr': psnr,
         'psnr_label': _psnr_quality_label(psnr),
         'ssim': ssim,
         'ssim_label': _ssim_quality_label(ssim),
-        'mse': np.mean((hr_true - sr_pred) ** 2),
-        'mae': np.mean(np.abs(hr_true - sr_pred))
+        'psnr_bias_corrected': psnr_bc,
+        'ssim_bias_corrected': ssim_bc,
+        'brightness_bias': brightness_bias,
+        'mse': mse,
+        'mae': mae,
+        'rmse': rmse,
+        'edge_mae': edge_mae,
+        'edge_ratio': edge_ratio,
+        'contrast_ratio': contrast_ratio,
+        'p01_p99_range_ratio': p01_p99_range_ratio
     }
 
 
