@@ -6,6 +6,9 @@
   },
 
   "network": {
+    "use_cbam": true,
+    "cbam_reduction": 8,
+    "cbam_spatial_kernel": 7,
     "encoder": {
       "in_channels": 2,
       "num_layers": 2,
@@ -19,12 +22,14 @@
       "kernel_size": 3
     },
     "decoder": {
-      "deconv": {
+      "upsample": {
+        "scale_factor": 2,
+        "mode": "bilinear"
+      },
+      "conv": {
         "in_channels": 64,
-        "kernel_size": 4,
-        "stride": 2,
-        "padding": 1,
-        "out_channels": 64
+        "out_channels": 64,
+        "kernel_size": 3
       },
       "final": {
         "in_channels": 64,
@@ -35,21 +40,25 @@
   },
 
   "training": {
-    "num_epochs": 30,
+    "num_epochs": 35,
     "batch_size": 8,
-
     "min_L": 7,
     "n_views": 7,
     "n_workers": 4,
     "crop": 1,
 
-    "lr": 0.0003,
-    "lr_step": 3,
-    "lr_decay": 0.95,
+    "lr": 0.00003,
+    "lr_step": 5,
+    "lr_decay": 0.9,
+
+    "use_cbam_warmup": false,
+    "cbam_warmup_epochs": 10,
+    "base_lr_joint": 0.000003,
+    "cbam_lr_warmup": 0.0001,
+    "cbam_lr_joint": 0.0003,
 
     "load_lr_maps": false,
     "beta": 0.0,
-
     "create_patches": false,
     "patch_size": 128,
     "val_proportion": 0.2,

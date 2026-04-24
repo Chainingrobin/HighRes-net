@@ -54,7 +54,13 @@ def load_model(config, checkpoint_file):
 #     checkpoint_dir = config["paths"]["checkpoint_dir"]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = HRNet(config["network"]).to(device)
-    model.load_state_dict(torch.load(checkpoint_file))
+    state_dict = torch.load(checkpoint_file, map_location=device)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys or unexpected_keys:
+        print(
+            "Checkpoint loaded with partial match "
+            f"(missing={len(missing_keys)}, unexpected={len(unexpected_keys)})."
+        )
     return model
 
 

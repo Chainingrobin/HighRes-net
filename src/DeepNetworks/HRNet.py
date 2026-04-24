@@ -2,6 +2,7 @@
 
 import torch.nn as nn
 import torch
+from .cbam import CBAM
 
 
 class ResidualBlock(nn.Module):
@@ -34,7 +35,7 @@ class ResidualBlock(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, use_cbam=False, cbam_reduction=8, cbam_spatial_kernel=7):
         '''
         Args:
             config : dict, configuration file
@@ -55,9 +56,14 @@ class Encoder(nn.Module):
         res_layers = [ResidualBlock(channel_size, kernel_size) for _ in range(num_layers)]
         self.res_layers = nn.Sequential(*res_layers)
 
-        self.final = nn.Sequential(
+        final_layers = [
             nn.Conv2d(in_channels=channel_size, out_channels=channel_size, kernel_size=kernel_size, padding=padding)
-        )
+        ]
+        if use_cbam:
+            final_layers.append(
+                CBAM(channels=channel_size, reduction=cbam_reduction, spatial_kernel=cbam_spatial_kernel)
+            )
+        self.final = nn.Sequential(*final_layers)
 
     def forward(self, x):
         '''
@@ -136,7 +142,7 @@ class RecuversiveNet(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, use_cbam=False, cbam_reduction=8, cbam_spatial_kernel=7):
         '''
         Args:
             config : dict, configuration file
@@ -144,13 +150,49 @@ class Decoder(nn.Module):
         
         super(Decoder, self).__init__()
 
-        # Deconv with proper padding for 2x upsampling: (128-1)*2 - 2*1 + 4 + 0 = 256
-        self.deconv = nn.Sequential(nn.ConvTranspose2d(in_channels=config["deconv"]["in_channels"],
-                                                       out_channels=config["deconv"]["out_channels"],
-                                                       kernel_size=config["deconv"]["kernel_size"],
-                                                       stride=config["deconv"]["stride"],
-                                                       padding=config["deconv"].get("padding", 0)),
-                                    nn.PReLU())
+        # Preferred upsampling path for artifact reduction: resize + conv.
+        if "upsample" in config and "conv" in config:
+            upsample_cfg = config["upsample"]
+            conv_cfg = config["conv"]
+            mode = upsample_cfg.get("mode", "bilinear")
+            align_corners = False if mode in ("bilinear", "bicubic", "trilinear") else None
+
+            self.deconv = nn.Sequential(
+                nn.Upsample(
+                    scale_factor=upsample_cfg.get("scale_factor", 2),
+                    mode=mode,
+                    align_corners=align_corners,
+                ),
+                nn.Conv2d(
+                    in_channels=conv_cfg["in_channels"],
+                    out_channels=conv_cfg["out_channels"],
+                    kernel_size=conv_cfg.get("kernel_size", 3),
+                    padding=conv_cfg.get("kernel_size", 3) // 2,
+                ),
+                nn.PReLU(),
+            )
+            cbam_channels = conv_cfg["out_channels"]
+        else:
+            # Backward-compatible fallback.
+            self.deconv = nn.Sequential(
+                nn.ConvTranspose2d(
+                    in_channels=config["deconv"]["in_channels"],
+                    out_channels=config["deconv"]["out_channels"],
+                    kernel_size=config["deconv"]["kernel_size"],
+                    stride=config["deconv"]["stride"],
+                    padding=config["deconv"].get("padding", 0),
+                ),
+                nn.PReLU(),
+            )
+            cbam_channels = config["deconv"]["out_channels"]
+        
+        self.cbam = None
+        if use_cbam:
+            self.cbam = CBAM(
+                channels=cbam_channels,
+                reduction=cbam_reduction, 
+                spatial_kernel=cbam_spatial_kernel
+            )
 
         self.final = nn.Conv2d(in_channels=config["final"]["in_channels"],
                                out_channels=config["final"]["out_channels"],
@@ -163,10 +205,12 @@ class Decoder(nn.Module):
         Args:
             x : tensor (B, C, W, H), hidden states
         Returns:
-            out: tensor (B, C_out, 3*W, 3*H), fused hidden state
+            out: tensor (B, C_out, 2*W, 2*H), fused hidden state
         '''
         
         x = self.deconv(x)
+        if self.cbam:
+            x = self.cbam(x)
         x = self.final(x)
         return x
 
@@ -181,9 +225,23 @@ class HRNet(nn.Module):
         '''
 
         super(HRNet, self).__init__()
-        self.encode = Encoder(config["encoder"])
+        use_cbam = config.get("use_cbam", False)
+        cbam_reduction = config.get("cbam_reduction", 8)
+        cbam_spatial_kernel = config.get("cbam_spatial_kernel", 7)
+
+        self.encode = Encoder(
+            config["encoder"],
+            use_cbam=use_cbam,
+            cbam_reduction=cbam_reduction,
+            cbam_spatial_kernel=cbam_spatial_kernel,
+        )
         self.fuse = RecuversiveNet(config["recursive"])
-        self.decode = Decoder(config["decoder"])
+        self.decode = Decoder(
+            config["decoder"],
+            use_cbam=use_cbam,
+            cbam_reduction=cbam_reduction,
+            cbam_spatial_kernel=cbam_spatial_kernel,
+        )
 
     def forward(self, lrs, alphas):
         '''
@@ -209,5 +267,5 @@ class HRNet(nn.Module):
 
         # fuse, upsample
         recursive_layer = self.fuse(layer1, alphas)  # fuse hidden states (B, C, W, H)
-        srs = self.decode(recursive_layer)  # decode final hidden state (B, C_out, 3*W, 3*H)
+        srs = self.decode(recursive_layer)  # decode final hidden state (B, C_out, 2*W, 2*H)
         return srs
