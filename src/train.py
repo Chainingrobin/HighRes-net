@@ -17,9 +17,8 @@ from torch.optim import lr_scheduler
 from DeepNetworks.HRNet import HRNet
 from DeepNetworks.ShiftNet import ShiftNet
 
-from DataLoader import ImagesetDataset
+from DataLoader import TiffPatchDataset, collateFunction
 from Evaluator import shift_cPSNR
-from utils import getImageSetDirectories, readBaselineCPSNR, collateFunction
 from tensorboardX import SummaryWriter
 
 
@@ -87,17 +86,19 @@ def get_loss(srs, hrs, hr_maps, metric='cMSE'):
     return -10 * torch.log10(loss)  # cPSNR
 
 
-def get_crop_mask(patch_size, crop_size):
+def get_crop_mask(patch_size, crop_size, upscale=2):
     """
     Computes a mask to crop borders.
     Args:
-        patch_size: int, size of patches
-        crop_size: int, size to crop (border)
+        patch_size: int, size of LR patches
+        crop_size: int, size to crop (border in upscaled space)
+        upscale: int, upscaling factor (default 2 for 2x SR)
     Returns:
-        torch_mask: tensor (1, 1, 3*patch_size, 3*patch_size), mask
+        torch_mask: tensor (1, 1, upscale*patch_size, upscale*patch_size), mask
     """
     
-    mask = np.ones((1, 1, 3 * patch_size, 3 * patch_size))  # crop_mask for loss (B, C, W, H)
+    sr_size = upscale * patch_size
+    mask = np.ones((1, 1, sr_size, sr_size))  # crop_mask for loss (B, C, W, H)
     mask[0, 0, :crop_size, :] = 0
     mask[0, 0, -crop_size:, :] = 0
     mask[0, 0, :, :crop_size] = 0
@@ -106,7 +107,7 @@ def get_crop_mask(patch_size, crop_size):
     return torch_mask
 
 
-def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, baseline_cpsnrs, config):
+def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, config):
     """
     Trains HRNet and ShiftNet for Multi-Frame Super Resolution (MFSR), and saves best model.
     Args:
@@ -114,7 +115,6 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, base
         regis_model: torch.model, ShiftNet
         optimizer: torch.optim, optimizer to minimize loss
         dataloaders: dict, wraps train and validation dataloaders
-        baseline_cpsnrs: dict, ESA baseline scores
         config: dict, configuration file
     """
     np.random.seed(123)  # seed all RNGs for reproducibility
@@ -124,10 +124,9 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, base
     batch_size = config["training"]["batch_size"]
     n_views = config["training"]["n_views"]
     min_L = config["training"]["min_L"]  # minimum number of views
-    beta = config["training"]["beta"]
 
-    subfolder_pattern = 'batch_{}_views_{}_min_{}_beta_{}_time_{}'.format(
-        batch_size, n_views, min_L, beta, f"{datetime.datetime.now():%Y-%m-%d-%H-%M-%S-%f}")
+    subfolder_pattern = 'batch_{}_views_{}_min_{}_time_{}'.format(
+        batch_size, n_views, min_L, f"{datetime.datetime.now():%Y-%m-%d-%H-%M-%S-%f}")
 
     checkpoint_dir_run = os.path.join(config["paths"]["checkpoint_dir"], subfolder_pattern)
     os.makedirs(checkpoint_dir_run, exist_ok=True)
@@ -143,9 +142,10 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, base
     best_score = 100
 
     P = config["training"]["patch_size"]
-    offset = (3 * config["training"]["patch_size"] - 128) // 2
+    UPSCALE = 2  # 2x upsampling for TIFF dataset (128 LR -> 256 SR)
+    offset = (UPSCALE * config["training"]["patch_size"] - 128) // 2
     C = config["training"]["crop"]
-    torch_mask = get_crop_mask(patch_size=P, crop_size=C)
+    torch_mask = get_crop_mask(patch_size=P, crop_size=C, upscale=UPSCALE)
     torch_mask = torch_mask.to(device)  # crop borders (loss)
 
     fusion_model.to(device)
@@ -204,15 +204,10 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, base
 
             srs = fusion_model(lrs, alphas)[:, 0]  # fuse multi frames (B, 1, 3*W, 3*H)
 
-            # compute ESA score
+            # compute validation score (negative cPSNR for loss comparison)
             srs = srs.detach().cpu().numpy()
             for i in range(srs.shape[0]):  # batch size
-
-                if baseline_cpsnrs is None:
-                    val_score -= shift_cPSNR(np.clip(srs[i], 0, 1), hrs[i], hr_maps[i])
-                else:
-                    ESA = baseline_cpsnrs[names[i]]
-                    val_score += ESA / shift_cPSNR(np.clip(srs[i], 0, 1), hrs[i], hr_maps[i])
+                val_score -= shift_cPSNR(np.clip(srs[i], 0, 1), hrs[i], hr_maps[i])
 
         val_score /= len(dataloaders['val'].dataset)
 
@@ -250,17 +245,24 @@ def main(config):
     regis_model = ShiftNet()
 
     optimizer = optim.Adam(list(fusion_model.parameters()) + list(regis_model.parameters()), lr=config["training"]["lr"])  # optim
-    # ESA dataset
+    
+    # Load TIFF patch dataset
     data_directory = config["paths"]["prefix"]
-
-    baseline_cpsnrs = None
-    if os.path.exists(os.path.join(data_directory, "norm.csv")):
-        baseline_cpsnrs = readBaselineCPSNR(os.path.join(data_directory, "norm.csv"))
-
-    train_set_directories = getImageSetDirectories(os.path.join(data_directory, "train"))
-
+    train_dir = os.path.join(data_directory, "train")
+    
+    if not os.path.exists(train_dir):
+        raise FileNotFoundError(f"Training data directory not found: {train_dir}")
+    
+    # Discover all patch directories
+    patch_dirs = sorted([os.path.join(train_dir, d) for d in os.listdir(train_dir) 
+                         if os.path.isdir(os.path.join(train_dir, d))])
+    
+    if len(patch_dirs) == 0:
+        raise FileNotFoundError(f"No patch directories found in {train_dir}")
+    
+    # Split into train/val
     val_proportion = config['training']['val_proportion']
-    train_list, val_list = train_test_split(train_set_directories,
+    train_list, val_list = train_test_split(patch_dirs,
                                             test_size=val_proportion,
                                             random_state=1, shuffle=True)
 
@@ -268,19 +270,15 @@ def main(config):
     batch_size = config["training"]["batch_size"]
     n_workers = config["training"]["n_workers"]
     n_views = config["training"]["n_views"]
-    min_L = config["training"]["min_L"]  # minimum number of views
-    beta = config["training"]["beta"]
+    min_L = config["training"]["min_L"]
 
-    train_dataset = ImagesetDataset(imset_dir=train_list, config=config["training"],
-                                    top_k=n_views, beta=beta)
+    train_dataset = TiffPatchDataset(patch_dirs=train_list, max_views=n_views)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size,
                                   shuffle=True, num_workers=n_workers,
                                   collate_fn=collateFunction(min_L=min_L),
                                   pin_memory=True)
 
-    config["training"]["create_patches"] = False
-    val_dataset = ImagesetDataset(imset_dir=val_list, config=config["training"],
-                                  top_k=n_views, beta=beta)
+    val_dataset = TiffPatchDataset(patch_dirs=val_list, max_views=n_views)
     val_dataloader = DataLoader(val_dataset, batch_size=1,
                                 shuffle=False, num_workers=n_workers,
                                 collate_fn=collateFunction(min_L=min_L),
@@ -291,7 +289,7 @@ def main(config):
     # Train model
     torch.cuda.empty_cache()
 
-    trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, baseline_cpsnrs, config)
+    trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, config)
 
 
 if __name__ == '__main__':
