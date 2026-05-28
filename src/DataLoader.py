@@ -121,22 +121,17 @@ class TiffPatchDataset(Dataset):
         return len(self.patch_dirs)
     
     def __getitem__(self, index):
-        """Returns an ImageSet dict for the patch at given index."""
-        
         if isinstance(index, int):
             patch_dir = self.patch_dirs[index]
         else:
             raise KeyError('index must be int')
-        
-        imset = read_tiff_patch(patch_dir, max_lr_frames=self.max_views)
-        
-        # Convert to torch tensors with float32 normalization [0, 1]
-        imset['lr'] = torch.from_numpy(skimage.img_as_float(imset['lr']).astype(np.float32))
-        imset['hr'] = torch.from_numpy(skimage.img_as_float(imset['hr']).astype(np.float32))
-        imset['hr_map'] = torch.from_numpy(imset['hr_map'].astype(np.float32))
-        
-        return imset
 
+        imset = read_tiff_patch(patch_dir, max_lr_frames=self.max_views)
+
+        imset['lr']     = torch.from_numpy(skimage.img_as_float(imset['lr']).astype(np.float32))
+        imset['hr']     = torch.from_numpy(skimage.img_as_float(imset['hr']).astype(np.float32))
+        imset['hr_map'] = torch.from_numpy(imset['hr_map'].astype(np.float32))
+        return imset
 
 class collateFunction():
     """Util class to create batches with padding for variable LR frame counts."""
