@@ -6,25 +6,34 @@
   },
 
   "network": {
+    "use_cbam": true,
+    "use_checkpointing": false,
+    "cbam_reduction": 8,
+    "cbam_spatial_kernel": 7,
+
     "encoder": {
       "in_channels": 2,
       "num_layers": 2,
       "kernel_size": 3,
       "channel_size": 64
     },
+
     "recursive": {
       "alpha_residual": true,
       "in_channels": 64,
       "num_layers": 2,
       "kernel_size": 3
     },
+
     "decoder": {
-      "deconv": {
+      "upsample": {
+        "scale_factor": 2,
+        "mode": "bilinear"
+      },
+      "conv": {
         "in_channels": 64,
-        "kernel_size": 4,
-        "stride": 2,
-        "padding": 1,
-        "out_channels": 64
+        "out_channels": 64,
+        "kernel_size": 3
       },
       "final": {
         "in_channels": 64,
@@ -35,25 +44,60 @@
   },
 
   "training": {
-    "num_epochs": 300,
+    "num_epochs": 30,
     "batch_size": 8,
+    "grad_accum_steps": 1,
+
+    "use_amp": true,
+    "amp_dtype": "float16",
 
     "min_L": 7,
     "n_views": 7,
     "n_workers": 4,
+
     "crop": 1,
 
-    "lr": 0.0007,
-    "lr_step": 3,
-    "lr_decay": 0.95,
+    "lr": 0.00005,
+    "lr_step": 40,
+    "lr_decay": 0.85,
+
+    "fusion_lr": 0.00008,
+    "fusion_blend_lr": 0.0008,
+
+    "use_cbam_warmup": true,
+    "cbam_warmup_epochs": 8,
+    "cbam_lr_warmup": 0.0001,
+    "base_lr_joint": 0.00003,
+    "cbam_lr_joint": 0.000005,
 
     "load_lr_maps": false,
-    "beta": 0.0,
 
+    "beta": 0.0,
     "create_patches": false,
     "patch_size": 128,
-    "val_proportion": 0.2,
+    "val_proportion": 0.0,
+
     "lambda": 0.000001,
-    "lambda_range": 0.02
+    "lambda_shift_reg": 0.000001,
+
+    "lambda_range": 0.003,
+
+    "lambda_tv": 0.0,
+    "lambda_edge_tv": 0.0,
+    "edge_aware_k": 10.0,
+
+    "lambda_freq": 0.002,
+    "lambda_dir": 0.015,
+    "dir_emphasis_axis": "none",
+    "dir_emphasis": 1.0,
+
+    "lambda_axis_freq": 0.0,
+    "axis_sigma_ratio": 0.08,
+
+    "freq_low_ratio": 0.12,
+    "freq_high_ratio": 0.28,
+    "freq_use_log_magnitude": true,
+
+    "smoothness_mode": "freq_band"
   }
 }

@@ -11,6 +11,7 @@ import torch
 import torch.optim as optim
 import argparse
 from torch import nn
+from contextlib import nullcontext
 from torch.utils.data import DataLoader
 from torch.optim import lr_scheduler
 
@@ -138,6 +139,13 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, conf
     writer = SummaryWriter(logging_dir)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    train_cfg = config["training"]
+    use_amp = bool(train_cfg.get("use_amp", True)) and device.type == 'cuda'
+    amp_dtype_name = str(train_cfg.get("amp_dtype", "float16")).lower()
+    amp_dtype = torch.bfloat16 if amp_dtype_name in ("bf16", "bfloat16") else torch.float16
+    grad_accum_steps = max(1, int(train_cfg.get("grad_accum_steps", 1)))
+    scaler_enabled = use_amp and amp_dtype == torch.float16
+    scaler = torch.cuda.amp.GradScaler(enabled=scaler_enabled)
 
     best_score = 100
 
@@ -155,6 +163,8 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, conf
                                                verbose=True, patience=config['training']['lr_step'])
 
     for epoch in tqdm(range(1, num_epochs + 1)):
+        if device.type == 'cuda':
+            torch.cuda.reset_peak_memory_stats(device)
 
         # Train
         fusion_model.train()
@@ -162,52 +172,77 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, conf
         train_loss = 0.0  # monitor train loss
 
         # Iterate over data.
-        for lrs, alphas, hrs, hr_maps, names in tqdm(dataloaders['train']):
+        optimizer.zero_grad(set_to_none=True)
+        for step_idx, (lrs, alphas, hrs, hr_maps, names) in enumerate(tqdm(dataloaders['train']), start=1):
 
-            optimizer.zero_grad()  # zero the parameter gradients
             lrs = lrs.float().to(device)
             alphas = alphas.float().to(device)
             hr_maps = hr_maps.float().to(device)
             hrs = hrs.float().to(device)
 
-            # torch.autograd.set_detect_anomaly(mode=True)
-            srs = fusion_model(lrs, alphas)  # fuse multi frames (B, 1, 3*W, 3*H)
+            amp_ctx = torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp) if device.type == 'cuda' else nullcontext()
+            with amp_ctx:
+                # torch.autograd.set_detect_anomaly(mode=True)
+                srs = fusion_model(lrs, alphas)  # fuse multi frames (B, 1, 3*W, 3*H)
 
-            # Register batch wrt HR
-            shifts = register_batch(regis_model,
-                                    srs[:, :, offset:(offset + 128), offset:(offset + 128)],
-                                    reference=hrs[:, offset:(offset + 128), offset:(offset + 128)].view(-1, 1, 128, 128))
-            srs_shifted = apply_shifts(regis_model, srs, shifts, device)[:, 0]
+                # Register batch wrt HR
+                shifts = register_batch(regis_model,
+                                        srs[:, :, offset:(offset + 128), offset:(offset + 128)],
+                                        reference=hrs[:, offset:(offset + 128), offset:(offset + 128)].view(-1, 1, 128, 128))
+                srs_shifted = apply_shifts(regis_model, srs, shifts, device)[:, 0]
 
-            # Training loss
-            cropped_mask = torch_mask[0] * hr_maps  # Compute current mask (Batch size, W, H)
-            # srs_shifted = torch.clamp(srs_shifted, min=0.0, max=1.0)  # correct over/under-shoots
-            loss = -get_loss(srs_shifted, hrs, cropped_mask, metric='cPSNR')
-            loss = torch.mean(loss)
-            loss += config["training"]["lambda"] * torch.mean(shifts)**2
+                # Training loss
+                cropped_mask = torch_mask[0] * hr_maps  # Compute current mask (Batch size, W, H)
+                # srs_shifted = torch.clamp(srs_shifted, min=0.0, max=1.0)  # correct over/under-shoots
+                loss = -get_loss(srs_shifted, hrs, cropped_mask, metric='cPSNR')
+                loss = torch.mean(loss)
+                # Backward-compatible: prefer explicit shift regularization key.
+                lambda_shift_reg = config["training"].get("lambda_shift_reg", config["training"].get("lambda", 0.0))
+                loss += lambda_shift_reg * torch.mean(shifts)**2
 
             # Backprop
-            loss.backward()
-            optimizer.step()
-            epoch_loss = loss.detach().cpu().numpy() * len(hrs) / len(dataloaders['train'].dataset)
+            loss_for_log = loss.detach()
+            loss = loss / grad_accum_steps
+            if scaler_enabled:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
+
+            if step_idx % grad_accum_steps == 0 or step_idx == len(dataloaders['train']):
+                if scaler_enabled:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+            epoch_loss = loss_for_log.cpu().numpy() * len(hrs) / len(dataloaders['train'].dataset)
             train_loss += epoch_loss
 
         # Eval
         fusion_model.eval()
+        regis_model.eval()
         val_score = 0.0  # monitor val score
+        last_srs = None
+        last_hrs = None
 
-        for lrs, alphas, hrs, hr_maps, names in dataloaders['val']:
-            lrs = lrs.float().to(device)
-            alphas = alphas.float().to(device)
-            hrs = hrs.numpy()
-            hr_maps = hr_maps.numpy()
+        with torch.no_grad():
+            for lrs, alphas, hrs, hr_maps, names in dataloaders['val']:
+                lrs = lrs.float().to(device)
+                alphas = alphas.float().to(device)
+                hrs = hrs.numpy()
+                hr_maps = hr_maps.numpy()
 
-            srs = fusion_model(lrs, alphas)[:, 0]  # fuse multi frames (B, 1, 3*W, 3*H)
+                amp_ctx = torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp) if device.type == 'cuda' else nullcontext()
+                with amp_ctx:
+                    srs = fusion_model(lrs, alphas)[:, 0]  # fuse multi frames (B, 1, 3*W, 3*H)
 
-            # compute validation score (negative cPSNR for loss comparison)
-            srs = srs.detach().cpu().numpy()
-            for i in range(srs.shape[0]):  # batch size
-                val_score -= shift_cPSNR(np.clip(srs[i], 0, 1), hrs[i], hr_maps[i])
+                # compute validation score (negative cPSNR for loss comparison)
+                srs = srs.detach().cpu().numpy()
+                last_srs = srs
+                last_hrs = hrs
+                for i in range(srs.shape[0]):  # batch size
+                    val_score -= shift_cPSNR(np.clip(srs[i], 0, 1), hrs[i], hr_maps[i])
 
         val_score /= len(dataloaders['val'].dataset)
 
@@ -218,11 +253,15 @@ def trainAndGetBestModel(fusion_model, regis_model, optimizer, dataloaders, conf
                        os.path.join(checkpoint_dir_run, 'ShiftNet.pth'))
             best_score = val_score
 
-        writer.add_image('SR Image', (srs[0] - np.min(srs[0])) / np.max(srs[0]), epoch, dataformats='HW')
-        error_map = hrs[0] - srs[0]
-        writer.add_image('Error Map', error_map, epoch, dataformats='HW')
+        if last_srs is not None and last_hrs is not None:
+            writer.add_image('SR Image', (last_srs[0] - np.min(last_srs[0])) / np.max(last_srs[0]), epoch, dataformats='HW')
+            error_map = last_hrs[0] - last_srs[0]
+            writer.add_image('Error Map', error_map, epoch, dataformats='HW')
         writer.add_scalar("train/loss", train_loss, epoch)
         writer.add_scalar("train/val_loss", val_score, epoch)
+        if device.type == 'cuda':
+            peak_vram_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+            writer.add_scalar("train/peak_vram_gb", peak_vram_gb, epoch)
         scheduler.step(val_score)
     writer.close()
 
@@ -296,11 +335,35 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", help="path of the config file", default='config/config.json')
+    parser.add_argument("--lambda_reg", type=float, default=None,
+                        help="Override training lambda regularization term.")
+    parser.add_argument("--num_epochs", type=int, default=None,
+                        help="Override number of epochs.")
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="Override batch size.")
+    parser.add_argument("--lr", type=float, default=None,
+                        help="Override learning rate.")
 
     args = parser.parse_args()
     assert os.path.isfile(args.config)
 
     with open(args.config, "r") as read_file:
         config = json.load(read_file)
+
+    # Optional CLI overrides for fast experiment sweeps without editing config files.
+    if args.lambda_reg is not None:
+        config["training"]["lambda"] = args.lambda_reg
+    if args.num_epochs is not None:
+        config["training"]["num_epochs"] = args.num_epochs
+    if args.batch_size is not None:
+        config["training"]["batch_size"] = args.batch_size
+    if args.lr is not None:
+        config["training"]["lr"] = args.lr
+
+    print("\nEffective training hyperparameters:")
+    print(f"  lambda: {config['training']['lambda']}")
+    print(f"  num_epochs: {config['training']['num_epochs']}")
+    print(f"  batch_size: {config['training']['batch_size']}")
+    print(f"  lr: {config['training']['lr']}")
 
     main(config)

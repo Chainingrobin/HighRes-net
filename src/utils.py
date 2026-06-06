@@ -1,8 +1,6 @@
 """ Python utilities """
 
-import csv
 import numpy as np
-import os
 import warnings
 
 import matplotlib.pyplot as plt
@@ -10,39 +8,6 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import seaborn as sns
 from skimage import transform, img_as_float, exposure
 import torch
-
-
-def readBaselineCPSNR(path):
-    """
-    Reads the baseline cPSNR scores from `path`.
-    Args:
-        filePath: str, path/filename of the baseline cPSNR scores
-    Returns:
-        scores: dict, of {'imagexxx' (str): score (float)}
-    """
-    scores = dict()
-    with open(path, 'r') as file:
-        reader = csv.reader(file, delimiter=' ')
-        for row in reader:
-            scores[row[0].strip()] = float(row[1].strip())
-    return scores
-
-
-def getImageSetDirectories(data_dir):
-    """
-    Returns a list of paths to directories, one for every imageset in `data_dir`.
-    Args:
-        data_dir: str, path/dir of the dataset
-    Returns:
-        imageset_dirs: list of str, imageset directories
-    """
-    
-    imageset_dirs = []
-    for channel_dir in ['RED', 'NIR']:
-        path = os.path.join(data_dir, channel_dir)
-        for imageset_name in os.listdir(path):
-            imageset_dirs.append(os.path.join(path, imageset_name))
-    return imageset_dirs
 
 
     
@@ -115,7 +80,6 @@ class collateFunction():
 
 def imsetshow(imageset, k=None, show_map=True, show_histogram=True, figsize=None, **kwargs):
     """
-    # TODO flake8 W605 invalid escape sequence '\m'
     Shows the imageset collection of high-res and low-res images with clearance maps.
     Args:
         k : int, number of low-res views to show. Default option (k=0) shows all.
