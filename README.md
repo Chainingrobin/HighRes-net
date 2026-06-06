@@ -1,7 +1,5 @@
 # HighRes-Net: Multi-Frame Super-Resolution
 
-# this was used for ESA satelitte stuff and the fluff has been removed too so check and compare with the original repo to see changes in scripts etc
-
 Multi-frame super-resolution (MFSR) using PyTorch. Trained on synthetic microscopy data with HRNet architecture + ShiftNet registration + range regularization.
 
 ## Quick Start (5 minutes)
@@ -19,7 +17,7 @@ jupyter notebook notebooks/inference_microscopy.ipynb
 
 ## Documentation
 
-👉 **START HERE:** [DOCUMENTATION.md](DOCUMENTATION.md) — Complete guide to training, tuning, and troubleshooting
+👉 **START HERE:** [README_THESIS.md](README_THESIS.md) — Complete guide to training, tuning, and troubleshooting
 
 - **Setup & Installation** — System requirements, CUDA setup
 - **Training Guide** — Step-by-step training on your data
@@ -62,16 +60,6 @@ models/weights/HRNet.pth  # Trained weights
 ✅ **Configurable training** — Adjust for your data size & GPU  
 ✅ **Fast inference** — ~50ms for 7-frame fusion on RTX 4060
 
-## Performance
-
-After training on 12-15 scenes (RTX 4060):
-
-| Metric     | Random | Trained  |
-| ---------- | ------ | -------- |
-| PSNR       | 9.5 dB | 26-28 dB |
-| vs Bicubic | -5 dB  | +2-5 dB  |
-| SSIM       | 0.42   | 0.85+    |
-
 ## Citation
 
 Based on HighRes-Net (ESA Kelvin Competition 2019)
@@ -89,5 +77,3 @@ Based on HighRes-Net (ESA Kelvin Competition 2019)
 Apache 2.0 License. See [LICENSE](LICENSE)
 
 ---
-
-**Need help?** See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) or run `python verify_setup.py`
