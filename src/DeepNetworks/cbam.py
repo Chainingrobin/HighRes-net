@@ -18,13 +18,12 @@ class ChannelAttention(nn.Module):
         self._init_passthrough()
 
     def _init_passthrough(self):
-        """Initialise as identity: gates start at ~1.0, CBAM has no effect at epoch 1."""
+        """Initialize with zero weights and positive bias so the gate starts open."""
         for m in self.mlp.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.zeros_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-        # Push final conv bias high so sigmoid(4.0) = 0.982 ≈ 1.0
         final_conv = self.mlp[2]
         nn.init.constant_(final_conv.bias, 1.5)
 
@@ -47,7 +46,7 @@ class SpatialAttention(nn.Module):
         self._init_passthrough()
 
     def _init_passthrough(self):
-        """Initialise as identity: spatial gate starts at ~1.0 everywhere."""
+        """Initialize with zero weights and positive bias so the gate starts open."""
         nn.init.zeros_(self.conv.weight)
         nn.init.constant_(self.conv.bias, 1.5)
 

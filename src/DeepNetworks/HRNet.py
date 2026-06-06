@@ -29,8 +29,9 @@ class FusionAttention(nn.Module):
     "at each spatial position (x,y), which frame is more trustworthy?"
     and produces a weighted blend before the residual correction.
 
-    Starts as a passthrough (all weights zero, blend=0) so it has zero
-    effect at epoch 1 and cannot destabilise a loaded pretrained weight.
+    Starts as a near-passthrough (all weights zero, blend initialized low)
+    so it has minimal effect at epoch 1 and cannot destabilise a loaded
+    pretrained weight.
     The blend gate is a single learnable scalar — if the attention learns
     nothing useful, it stays near 0 and the original fuse path dominates.
     """
@@ -47,9 +48,7 @@ class FusionAttention(nn.Module):
         self.value_alice = nn.Conv2d(channels, channels, kernel_size=1, bias=True)
         self.value_bob   = nn.Conv2d(channels, channels, kernel_size=1, bias=True)
 
-        # Blend gate: sigmoid(0) = 0.5, but since values start at 0
-        # the attended output is also 0, so effective contribution is 0.
-        # Grows as training proceeds and attention becomes useful.
+        # Blend gate starts near 0 so attention contributes minimally at init.
         self.blend = nn.Parameter(torch.full((1,), -6.0))
 
         self._init_passthrough()
@@ -77,8 +76,7 @@ class FusionAttention(nn.Module):
         attended = (1.0 - weight) * self.value_alice(alice) + weight * self.value_bob(bob)
 
         # Blend gate: how much does attention contribute overall?
-        # sigmoid(self.blend) starts at 0.5 but attended starts at 0,
-        # so output = alice until the network learns to use attention.
+        # Starts near 0, so output is close to alice until attention learns.
         alpha   = torch.sigmoid(self.blend)
         return alpha * attended + (1.0 - alpha) * alice
 

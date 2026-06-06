@@ -80,7 +80,6 @@ class collateFunction():
 
 def imsetshow(imageset, k=None, show_map=True, show_histogram=True, figsize=None, **kwargs):
     """
-    # TODO flake8 W605 invalid escape sequence '\m'
     Shows the imageset collection of high-res and low-res images with clearance maps.
     Args:
         k : int, number of low-res views to show. Default option (k=0) shows all.
